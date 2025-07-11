@@ -7,6 +7,7 @@ import vision from "@google-cloud/vision";
 import fetch from "node-fetch";
 
 dotenv.config();
+
 const app = express();
 const port = process.env.PORT;
 const token = process.env.BOT_TOKEN;
