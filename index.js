@@ -109,8 +109,7 @@ bot.on("photo", async (msg) => {
     console.error("OCR Fehler:", error.message);
     await bot.sendMessage(chatId, "🚫 Beim Verarbeiten des Bildes ist ein Fehler aufgetreten.");
   }
+  console.log(`✅ LUXEntryBot Webhook aktiv unter: ${webhookUrl}`);
+
 });
 
-app.listen(port, () => {
-  console.log(`✅ LUXEntryBot läuft via Webhook auf: ${webhookUrl}`);
-});
