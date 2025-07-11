@@ -9,11 +9,10 @@ import fetch from "node-fetch";
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT;
 const token = process.env.BOT_TOKEN;
 const baseUrl = process.env.BASE_URL;
 
-const bot = new TelegramBot(token, { webHook: { port: port } });
+const bot = new TelegramBot(token);
 const webhookUrl = `${baseUrl}/bot${token}`;
 bot.setWebHook(webhookUrl);
 
@@ -81,7 +80,7 @@ bot.on("callback_query", async (query) => {
     await bot.sendMessage(chatId, `Super! ✨ Bitte bestätige auch, dass du unsere Gruppenregeln gelesen hast:`, {
       reply_markup: {
         inline_keyboard: [[{ text: "📜 Regeln gelesen ✅", callback_data: "rules_ok" }]]
-  
+      }
     });
   }
 
@@ -161,6 +160,6 @@ Bitte achte darauf, dass **alle folgenden Punkte** sichtbar sind:
   }
 });
 
-app.listen(port, () => {
+app.listen(3000, () => {
   console.log(`✅ LUXEntryBot läuft via Webhook auf: ${webhookUrl}`);
 });
