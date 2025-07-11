@@ -3,8 +3,8 @@ import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import fs from "fs";
 import vision from "@google-cloud/vision";
+import fetch from "node-fetch";
 
 dotenv.config();
 
