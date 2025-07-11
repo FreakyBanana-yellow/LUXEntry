@@ -34,6 +34,17 @@ const visionClient = new vision.ImageAnnotatorClient({
   keyFilename: "/etc/secrets/vision_key.json"
 });
 
+// Screenshot-Validierung (PayPal-Verlauf)
+const isValidPaypalScreenshot = (text) => {
+  return (
+    text.includes("Geld gesendet") &&
+    text.match(/Juli\s\d{1,2},\s\d{1,2}:\d{2}\s(AM|PM)/) &&
+    text.includes("Freunde und Familie") &&
+    text.includes("-0,01 €") &&
+    text.match(/1WC[A-Z0-9]{13}G/)
+  );
+};
+
 // Startnachricht
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
@@ -66,7 +77,15 @@ bot.on("callback_query", async (query) => {
   }
 
   if (data === "rules_ok") {
-    await bot.sendMessage(chatId, `🔐 Um Zugang zu erhalten, sende bitte einen Screenshot deiner Zahlung (z. B. PayPal).`);
+    await bot.sendMessage(chatId, `🔐 Um Zugang zu erhalten, sende bitte einen Screenshot **aus deinem PayPal-Zahlungsverlauf**. Wichtig:
+
+- Der Screenshot muss den Text "Geld gesendet" enthalten
+- Datum und Uhrzeit sichtbar (z. B. "Juli 11, 10:12 AM")
+- Betrag **-0,01 €**
+- "Freunde und Familie" muss angezeigt werden
+- Transaktionsnummer wie z. B. 1WC88058A3980530G
+
+Nur diese Form wird akzeptiert ✅`);
   }
 });
 
@@ -90,7 +109,7 @@ bot.on("photo", async (msg) => {
     const text = detections[0].description;
     console.log("OCR Text:", text);
 
-    if (text.includes("30") && text.includes("luna.vip@paypal.com")) {
+    if (isValidPaypalScreenshot(text)) {
       await bot.sendMessage(chatId, "✅ Zahlung erkannt! Zugang wird eingerichtet...");
 
       // Beispiel: Eintrag in Supabase (vereinfachte Version)
@@ -103,13 +122,14 @@ bot.on("photo", async (msg) => {
         }
       ]);
     } else {
-      await bot.sendMessage(chatId, "⚠️ Leider konnte keine gültige Zahlung erkannt werden. Bitte stelle sicher, dass Betrag und Empfänger sichtbar sind.");
+      await bot.sendMessage(chatId, "⚠️ Leider konnte keine gültige Zahlung erkannt werden. Bitte sende einen Screenshot direkt aus dem PayPal-Verlauf.");
     }
   } catch (error) {
     console.error("OCR Fehler:", error.message);
     await bot.sendMessage(chatId, "🚫 Beim Verarbeiten des Bildes ist ein Fehler aufgetreten.");
   }
-  console.log(`✅ LUXEntryBot Webhook aktiv unter: ${webhookUrl}`);
-
 });
 
+app.listen(port, () => {
+  console.log(`✅ LUXEntryBot läuft via Webhook auf: ${webhookUrl}`);
+});
