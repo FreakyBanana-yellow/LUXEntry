@@ -3,7 +3,7 @@ import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import visionPkg from "@google-cloud/vision";
+import vision from "@google-cloud/vision";
 import fetch from "node-fetch";
 
 dotenv.config();
@@ -30,7 +30,7 @@ const supabase = createClient(
 );
 
 // Google Vision Client (OCR für Screenshot-Auswertung)
-const visionClient = new ImageAnnotatorClient({
+const visionClient = new vision.ImageAnnotatorClient({
   keyFilename: "/etc/secrets/vision_key.json"
 });
 
