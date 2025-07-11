@@ -1,96 +1,116 @@
-require('dotenv').config();
-const TelegramBot = require('node-telegram-bot-api');
-const { createClient } = require('@supabase/supabase-js');
-const vision = require('@google-cloud/vision');
-const fs = require('fs');
+// index.js (Webhook-Version für LUXEntryBot)
+import express from "express";
+import TelegramBot from "node-telegram-bot-api";
+import dotenv from "dotenv";
+import { createClient } from "@supabase/supabase-js";
+import fs from "fs";
+import vision from "@google-cloud/vision";
 
-// === Setup ===
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
-const visionClient = new vision.ImageAnnotatorClient();
+dotenv.config();
 
-// === Start-Flow ===
-bot.onText(/\/(start|hilfe)/i, async (msg) => {
+const app = express();
+const port = process.env.PORT || 3000;
+const token = process.env.BOT_TOKEN;
+const baseUrl = process.env.BASE_URL;
+
+const bot = new TelegramBot(token, { webHook: { port: port } });
+const webhookUrl = `${baseUrl}/bot${token}`;
+bot.setWebHook(webhookUrl);
+
+app.use(express.json());
+app.post(`/bot${token}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+
+// Supabase Setup
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+// Google Vision Client (OCR für Screenshot-Auswertung)
+const visionClient = new vision.ImageAnnotatorClient({
+  keyFilename: "/etc/secrets/vision_key.json"
+});
+
+// Startnachricht
+bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  const username = msg.from.username || 'unbekannt';
+  const user = msg.from;
+  await bot.sendMessage(chatId, `👋 Willkommen, ${user.first_name}!
 
-  // Creator aus Supabase laden
-  const { data: creator, error } = await supabase
-    .from('creator_config')
-    .select('*')
-    .eq('creator_id', 'luna') // Später dynamisch
-    .single();
-
-  if (error || !creator) return bot.sendMessage(chatId, 'Fehler beim Laden der Creator-Daten.');
-
-  await bot.sendMessage(chatId, creator.welcome_text + '\n\nBist du mindestens 18 Jahre alt?', {
+Bitte bestätige zunächst dein Alter, um fortzufahren.`, {
     reply_markup: {
       inline_keyboard: [[
-        { text: '✅ Ja', callback_data: 'alter_ok' },
-        { text: '❌ Nein', callback_data: 'alter_nicht_ok' },
-      ]],
-    },
+        { text: "✅ Ich bin über 18", callback_data: "age_ok" },
+        { text: "❌ Ich bin unter 18", callback_data: "age_no" }
+      ]]
+    }
   });
 });
 
-// === CallbackHandler ===
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
+bot.on("callback_query", async (query) => {
   const data = query.data;
-  const username = query.from.username;
+  const chatId = query.message.chat.id;
+  const userId = query.from.id;
 
-  if (data === 'alter_ok') {
-    await bot.sendMessage(chatId, 'Super! Bitte bestätige die Gruppenregeln:', {
+  if (data === "age_ok") {
+    await bot.sendMessage(chatId, `Super! ✨ Bitte bestätige auch, dass du unsere Gruppenregeln gelesen hast:`, {
       reply_markup: {
         inline_keyboard: [[
-          { text: '✅ Ich akzeptiere die Regeln', callback_data: 'regeln_ok' },
-        ]],
-      },
+          { text: "📜 Regeln gelesen ✅", callback_data: "rules_ok" }
+        ]]
+      }
     });
-  } else if (data === 'alter_nicht_ok') {
-    await bot.sendMessage(chatId, 'Du musst mindestens 18 Jahre alt sein, um fortzufahren.');
-  } else if (data === 'regeln_ok') {
-    const gruppeLink = 'https://t.me/+DeinVIPLink'; // später dynamisch
-    await bot.sendMessage(chatId, `Perfekt! Hier ist dein Zugang zur VIP-Gruppe:\n${gruppeLink}`);
+  }
 
-    // Speichern in Supabase
-    await supabase.from('vip_users').upsert({
-      telegram_id: chatId,
-      username,
-      creator_id: 'luna',
-      alter_ok: true,
-      regeln_ok: true,
-      status: 'aktiv',
-    });
+  if (data === "rules_ok") {
+    await bot.sendMessage(chatId, `🔐 Um Zugang zu erhalten, sende bitte einen Screenshot deiner Zahlung (z. B. PayPal).`);
   }
 });
 
-// === Screenshot-Upload zur Zahlung (Text wird mit Vision geprüft) ===
-bot.on('photo', async (msg) => {
+bot.on("photo", async (msg) => {
   const chatId = msg.chat.id;
   const fileId = msg.photo[msg.photo.length - 1].file_id;
 
   try {
-    const fileLink = await bot.getFileLink(fileId);
-    const response = await fetch(fileLink);
-    const buffer = await response.arrayBuffer();
-    const tempPath = `/tmp/${fileId}.jpg`;
-    fs.writeFileSync(tempPath, Buffer.from(buffer));
+    const file = await bot.getFile(fileId);
+    const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    const res = await fetch(url);
+    const buffer = await res.arrayBuffer();
 
-    const [result] = await visionClient.textDetection(tempPath);
+    const [result] = await visionClient.textDetection({ image: { content: Buffer.from(buffer) } });
     const detections = result.textAnnotations;
-    const text = detections[0]?.description || '';
 
-    if (text.includes('30') && text.includes('luna.vip@paypal.com')) {
-      await bot.sendMessage(chatId, '✅ Zahlung erkannt! Du bekommst gleich deinen Zugang.');
-      await supabase.from('vip_users').update({ zahlung_ok: true }).eq('telegram_id', chatId);
-    } else {
-      await bot.sendMessage(chatId, '❌ Leider konnte ich deine Zahlung nicht eindeutig erkennen. Bitte prüfe den Screenshot.');
+    if (!detections.length) {
+      return bot.sendMessage(chatId, "❌ Leider konnte kein Text erkannt werden. Bitte versuche es erneut.");
     }
-  } catch (err) {
-    console.error(err);
-    await bot.sendMessage(chatId, 'Fehler bei der Verarbeitung des Screenshots.');
+
+    const text = detections[0].description;
+    console.log("OCR Text:", text);
+
+    if (text.includes("30") && text.includes("luna.vip@paypal.com")) {
+      await bot.sendMessage(chatId, "✅ Zahlung erkannt! Zugang wird eingerichtet...");
+
+      // Beispiel: Eintrag in Supabase (vereinfachte Version)
+      await supabase.from("entries").insert([
+        {
+          telegram_id: msg.from.id,
+          username: msg.from.username,
+          status: "confirmed",
+          model_id: "luna"
+        }
+      ]);
+    } else {
+      await bot.sendMessage(chatId, "⚠️ Leider konnte keine gültige Zahlung erkannt werden. Bitte stelle sicher, dass Betrag und Empfänger sichtbar sind.");
+    }
+  } catch (error) {
+    console.error("OCR Fehler:", error.message);
+    await bot.sendMessage(chatId, "🚫 Beim Verarbeiten des Bildes ist ein Fehler aufgetreten.");
   }
 });
 
-console.log('🤖 LUXEntryBot läuft!');
+app.listen(port, () => {
+  console.log(`✅ LUXEntryBot läuft via Webhook auf: ${webhookUrl}`);
+});
