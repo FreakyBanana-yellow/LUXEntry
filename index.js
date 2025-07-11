@@ -130,6 +130,5 @@ bot.on("photo", async (msg) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`✅ LUXEntryBot läuft via Webhook auf: ${webhookUrl}`);
-});
+console.log(`✅ LUXEntryBot Webhook aktiv unter: ${webhookUrl}`);
+
