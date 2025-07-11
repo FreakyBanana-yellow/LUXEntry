@@ -1,0 +1,9 @@
+# Verstecke API-Schlüssel
+vision_key.json
+*.json
+
+# Node Modules
+node_modules/
+
+# Umgebungsvariablen
+.env
