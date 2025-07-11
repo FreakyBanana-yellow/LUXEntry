@@ -1,4 +1,4 @@
-// index.js (Webhook-Version für LUXEntryBot mit model_id + Supabase Lookup)
+// index.js (Webhook-Version für LUXEntryBot mit Supabase + Screenshotprüfung)
 import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import dotenv from "dotenv";
@@ -34,7 +34,6 @@ const visionClient = new vision.ImageAnnotatorClient({
   keyFilename: "/etc/secrets/vision_key.json"
 });
 
-// Screenshot-Validierung (PayPal-Verlauf)
 const isValidPaypalScreenshot = (text, expectedAmount, recipientEmail) => {
   return (
     text.includes("Geld gesendet") &&
@@ -46,19 +45,17 @@ const isValidPaypalScreenshot = (text, expectedAmount, recipientEmail) => {
   );
 };
 
-// Start mit /start oder /start=modelid
 bot.onText(/\/start(.*)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const user = msg.from;
   const modelId = match[1] ? match[1].trim().replace("=", "") : null;
 
   if (modelId) {
-    // In Supabase eintragen oder aktualisieren
-    await supabase.from("entries").upsert({
+    await supabase.from("vip_users").upsert({
       telegram_id: user.id,
       username: user.username,
-      model_id: modelId,
-      status: "started"
+      creator_id: modelId,
+      status: "gestartet"
     }, { onConflict: ["telegram_id"] });
   }
 
@@ -80,34 +77,32 @@ bot.on("callback_query", async (query) => {
   const userId = query.from.id;
 
   if (data === "age_ok") {
+    await supabase.from("vip_users").update({ alter_ok: true }).eq("telegram_id", userId);
     await bot.sendMessage(chatId, `Super! ✨ Bitte bestätige auch, dass du unsere Gruppenregeln gelesen hast:`, {
       reply_markup: {
-        inline_keyboard: [[
-          { text: "📜 Regeln gelesen ✅", callback_data: "rules_ok" }
-        ]]
-      }
+        inline_keyboard: [[{ text: "📜 Regeln gelesen ✅", callback_data: "rules_ok" }]]
+      ]
     });
   }
 
   if (data === "rules_ok") {
-    const { data, error } = await supabase.from("entries").select("model_id").eq("telegram_id", userId).single();
-    const modelId = data?.model_id;
+    await supabase.from("vip_users").update({ regeln_ok: true }).eq("telegram_id", userId);
+    const { data: userEntry } = await supabase.from("vip_users").select("creator_id").eq("telegram_id", userId).single();
+    const creatorId = userEntry?.creator_id;
 
-    if (!modelId) return bot.sendMessage(chatId, "❌ Es wurde kein Model-Link gefunden. Bitte verwende einen gültigen Startlink wie z. B. t.me/LUXEntryBot?start=luna");
-
-    // Hole die Model-Infos aus einer anderen Tabelle
-    const { data: modelData } = await supabase.from("models").select("paypal_email, betrag").eq("id", modelId).single();
-
-    if (!modelData) return bot.sendMessage(chatId, "❌ Model-Daten konnten nicht gefunden werden.");
+    const { data: creator } = await supabase.from("creator_config").select("paypal, preis").eq("creator_id", creatorId).single();
+    if (!creator) return bot.sendMessage(chatId, "❌ Fehler beim Laden der Model-Daten.");
 
     await bot.sendMessage(chatId, `🔐 Um Zugang zu erhalten, sende bitte einen Screenshot **aus deinem PayPal-Zahlungsverlauf**. Wichtig:
 
 - Der Screenshot muss den Text "Geld gesendet" enthalten
-- Datum und Uhrzeit sichtbar (z. B. "Juli 11, 10:12 AM")
-- Betrag **-${modelData.betrag}**
+- Datum & Uhrzeit sichtbar (z. B. "Juli 11, 10:12 AM")
+- Betrag **-${creator.preis} €**
 - "Freunde und Familie" muss angezeigt werden
 - Transaktionsnummer wie z. B. 1WC88058A3980530G
-- Die Zahlung muss an **${modelData.paypal_email}** erfolgt sein ✅`);
+- Die Zahlung muss an **${creator.paypal}** erfolgt sein ✅
+
+📸 **Nur Screenshots direkt aus dem Verlauf** sind gültig!`);
   }
 });
 
@@ -124,33 +119,45 @@ bot.on("photo", async (msg) => {
 
     const [result] = await visionClient.textDetection({ image: { content: Buffer.from(buffer) } });
     const detections = result.textAnnotations;
-
-    if (!detections.length) {
-      return bot.sendMessage(chatId, "❌ Leider konnte kein Text erkannt werden. Bitte versuche es erneut.");
-    }
+    if (!detections.length) return bot.sendMessage(chatId, "❌ Kein Text erkannt. Bitte sende den Screenshot erneut.");
 
     const text = detections[0].description;
     console.log("OCR Text:", text);
 
-    // Daten holen
-    const { data: entryData } = await supabase.from("entries").select("model_id").eq("telegram_id", userId).single();
-    if (!entryData) return bot.sendMessage(chatId, "❌ Kein Model-Eintrag gefunden. Bitte starte neu mit gültigem Link.");
+    const { data: userEntry } = await supabase.from("vip_users").select("creator_id").eq("telegram_id", userId).single();
+    const creatorId = userEntry?.creator_id;
+    const { data: creator } = await supabase.from("creator_config").select("paypal, preis, vip_days").eq("creator_id", creatorId).single();
 
-    const { data: modelData } = await supabase.from("models").select("paypal_email, betrag").eq("id", entryData.model_id).single();
-    if (!modelData) return bot.sendMessage(chatId, "❌ Model-Daten fehlen.");
+    if (!creator) return bot.sendMessage(chatId, "❌ Fehler beim Laden der Model-Daten.");
 
-    if (isValidPaypalScreenshot(text, modelData.betrag, modelData.paypal_email)) {
-      await bot.sendMessage(chatId, `✅ Zahlung erkannt über **${modelData.betrag}** an **${modelData.paypal_email}**! Zugang wird eingerichtet...`);
+    if (isValidPaypalScreenshot(text, creator.preis, creator.paypal)) {
+      const vipBis = new Date();
+      vipBis.setDate(vipBis.getDate() + creator.vip_days);
 
-      await supabase.from("entries").update({
-        status: "confirmed"
+      await supabase.from("vip_users").update({
+        zahlung_ok: true,
+        vip_bis: vipBis.toISOString().split("T")[0],
+        screenshot_url: file.file_path,
+        status: "aktiv"
       }).eq("telegram_id", userId);
+
+      await bot.sendMessage(chatId, `✅ Zahlung über **${creator.preis} €** an **${creator.paypal}** erkannt! Zugang wird vorbereitet.`);
     } else {
-      await bot.sendMessage(chatId, "⚠️ Screenshot ungültig. Bitte sende ein Bild direkt aus deinem PayPal-Zahlungsverlauf mit dem korrekten Betrag und Empfänger.");
+      await bot.sendMessage(chatId, `⚠️ Screenshot ungültig.
+
+Bitte achte darauf, dass **alle folgenden Punkte** sichtbar sind:
+- Text "Geld gesendet"
+- Betrag -${creator.preis} €
+- Empfänger: ${creator.paypal}
+- Transaktionsnummer (z. B. 1WC...G)
+- "Freunde und Familie"
+- Datum & Uhrzeit sichtbar
+
+📸 Nur Screenshots **direkt aus dem PayPal-Verlauf** werden akzeptiert.`);
     }
-  } catch (error) {
-    console.error("OCR Fehler:", error.message);
-    await bot.sendMessage(chatId, "🚫 Beim Verarbeiten des Bildes ist ein Fehler aufgetreten.");
+  } catch (err) {
+    console.error("OCR Fehler:", err.message);
+    await bot.sendMessage(chatId, "🚫 Fehler beim Verarbeiten des Screenshots.");
   }
 });
 
