@@ -1,122 +1,96 @@
+require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config();
+const vision = require('@google-cloud/vision');
+const fs = require('fs');
 
+// === Setup ===
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+const visionClient = new vision.ImageAnnotatorClient();
 
-const userStates = {};
-
-bot.onText(/\/start(?:\s(\w+))?/, async (msg, match) => {
+// === Start-Flow ===
+bot.onText(/\/(start|hilfe)/i, async (msg) => {
   const chatId = msg.chat.id;
-  const username = msg.from.username || '';
-  const creatorId = match[1];
+  const username = msg.from.username || 'unbekannt';
 
-  if (!creatorId) {
-    bot.sendMessage(chatId, 'Bitte nutze den personalisierten Startlink des Models. Beispiel: /start luna');
-    return;
-  }
-
-  const { data: config, error } = await supabase
+  // Creator aus Supabase laden
+  const { data: creator, error } = await supabase
     .from('creator_config')
     .select('*')
-    .eq('creator_id', creatorId)
+    .eq('creator_id', 'luna') // Später dynamisch
     .single();
 
-  if (error || !config) {
-    bot.sendMessage(chatId, 'Fehler beim Laden der Creator-Konfiguration.');
-    return;
-  }
+  if (error || !creator) return bot.sendMessage(chatId, 'Fehler beim Laden der Creator-Daten.');
 
-  userStates[chatId] = { creatorId, step: 'alter' };
-
-  bot.sendMessage(chatId, `${config.welcome_text}
-
-Bist du mindestens 18 Jahre alt?`, {
+  await bot.sendMessage(chatId, creator.welcome_text + '\n\nBist du mindestens 18 Jahre alt?', {
     reply_markup: {
-      inline_keyboard: [
-        [{ text: '✅ Ja', callback_data: 'alter_yes' }],
-        [{ text: '❌ Nein', callback_data: 'alter_no' }]
-      ]
-    }
+      inline_keyboard: [[
+        { text: '✅ Ja', callback_data: 'alter_ok' },
+        { text: '❌ Nein', callback_data: 'alter_nicht_ok' },
+      ]],
+    },
   });
 });
 
-bot.on('callback_query', async (callbackQuery) => {
-  const msg = callbackQuery.message;
-  const chatId = msg.chat.id;
-  const username = callbackQuery.from.username || '';
-  const data = callbackQuery.data;
-  const state = userStates[chatId];
+// === CallbackHandler ===
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+  const username = query.from.username;
 
-  if (!state || !state.creatorId) return;
-
-  const { creatorId } = state;
-
-  const { data: config } = await supabase
-    .from('creator_config')
-    .select('*')
-    .eq('creator_id', creatorId)
-    .single();
-
-  if (data === 'alter_yes') {
-    userStates[chatId].step = 'regeln';
-    bot.sendMessage(chatId, `${config.regeln_text}
-
-Stimmst du den Regeln zu?`, {
+  if (data === 'alter_ok') {
+    await bot.sendMessage(chatId, 'Super! Bitte bestätige die Gruppenregeln:', {
       reply_markup: {
-        inline_keyboard: [
-          [{ text: '✅ Ich stimme zu', callback_data: 'regeln_yes' }],
-          [{ text: '❌ Nein', callback_data: 'regeln_no' }]
-        ]
-      }
+        inline_keyboard: [[
+          { text: '✅ Ich akzeptiere die Regeln', callback_data: 'regeln_ok' },
+        ]],
+      },
     });
-  } else if (data === 'alter_no') {
-    bot.sendMessage(chatId, 'Du musst mindestens 18 Jahre alt sein, um fortzufahren.');
-  } else if (data === 'regeln_yes') {
-    userStates[chatId].step = 'zahlung';
-    bot.sendMessage(chatId, `Perfekt! 💸 Der Zugang kostet ${config.preis} €.
-Bitte sende den Betrag an: ${config.paypal}
+  } else if (data === 'alter_nicht_ok') {
+    await bot.sendMessage(chatId, 'Du musst mindestens 18 Jahre alt sein, um fortzufahren.');
+  } else if (data === 'regeln_ok') {
+    const gruppeLink = 'https://t.me/+DeinVIPLink'; // später dynamisch
+    await bot.sendMessage(chatId, `Perfekt! Hier ist dein Zugang zur VIP-Gruppe:\n${gruppeLink}`);
 
-Anschließend sende bitte einen Screenshot deiner Zahlung.`);
-  } else if (data === 'regeln_no') {
-    bot.sendMessage(chatId, 'Du musst den Regeln zustimmen, um fortzufahren.');
-  }
-
-  bot.answerCallbackQuery(callbackQuery.id);
-});
-
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const state = userStates[chatId];
-  if (!state || !state.creatorId || state.step !== 'zahlung') return;
-
-  if (msg.photo) {
-    const fileId = msg.photo[msg.photo.length - 1].file_id;
-
-    const { data: config } = await supabase
-      .from('creator_config')
-      .select('*')
-      .eq('creator_id', state.creatorId)
-      .single();
-
-    const vipBis = new Date();
-    vipBis.setDate(vipBis.getDate() + config.vip_dauer);
-
-    await supabase.from('vip_users').insert({
-      telegram_id: String(chatId),
-      username: msg.from.username || '',
-      creator_id: state.creatorId,
+    // Speichern in Supabase
+    await supabase.from('vip_users').upsert({
+      telegram_id: chatId,
+      username,
+      creator_id: 'luna',
       alter_ok: true,
       regeln_ok: true,
-      zahlung_ok: true,
-      vip_bis: vipBis.toISOString().split('T')[0],
       status: 'aktiv',
-      screenshot_url: fileId,
     });
-
-    bot.sendMessage(chatId, `Danke! ✅ Deine Zahlung wurde registriert.
-Hier ist dein Zugang: ${config.gruppe_link}`);
-    delete userStates[chatId];
   }
 });
+
+// === Screenshot-Upload zur Zahlung (Text wird mit Vision geprüft) ===
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+  const fileId = msg.photo[msg.photo.length - 1].file_id;
+
+  try {
+    const fileLink = await bot.getFileLink(fileId);
+    const response = await fetch(fileLink);
+    const buffer = await response.arrayBuffer();
+    const tempPath = `/tmp/${fileId}.jpg`;
+    fs.writeFileSync(tempPath, Buffer.from(buffer));
+
+    const [result] = await visionClient.textDetection(tempPath);
+    const detections = result.textAnnotations;
+    const text = detections[0]?.description || '';
+
+    if (text.includes('30') && text.includes('luna.vip@paypal.com')) {
+      await bot.sendMessage(chatId, '✅ Zahlung erkannt! Du bekommst gleich deinen Zugang.');
+      await supabase.from('vip_users').update({ zahlung_ok: true }).eq('telegram_id', chatId);
+    } else {
+      await bot.sendMessage(chatId, '❌ Leider konnte ich deine Zahlung nicht eindeutig erkennen. Bitte prüfe den Screenshot.');
+    }
+  } catch (err) {
+    console.error(err);
+    await bot.sendMessage(chatId, 'Fehler bei der Verarbeitung des Screenshots.');
+  }
+});
+
+console.log('🤖 LUXEntryBot läuft!');
