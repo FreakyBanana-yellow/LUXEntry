@@ -81,7 +81,7 @@ bot.on("callback_query", async (query) => {
     await bot.sendMessage(chatId, `Super! ✨ Bitte bestätige auch, dass du unsere Gruppenregeln gelesen hast:`, {
       reply_markup: {
         inline_keyboard: [[{ text: "📜 Regeln gelesen ✅", callback_data: "rules_ok" }]]
-      ]
+  
     });
   }
 
