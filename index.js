@@ -55,8 +55,9 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
     return bot.sendMessage(chatId, "❌ Ungültiger Link – bitte klicke direkt auf deinen personalisierten Zugang.");
   }
 
-  const { data: model } = await supabase.from("creator_config").select("creator_id").eq("creator_id", modelName).single();
+  const { data: model } = await supabase.from("creator_config").select("creator_id, bot_paket").eq("creator_id", modelName).single();
   const modelId = model?.creator_id;
+  const paket = model?.bot_paket;
 
   if (!modelId) {
     return bot.sendMessage(chatId, "❌ Ungültiger Model-Link. Bitte prüfe deinen Zugangslink.");
@@ -79,6 +80,64 @@ Bitte bestätige zunächst dein Alter, um fortzufahren.`, {
       ]]
     }
   });
+});
+
+bot.on("photo", async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  const { data: userEntry } = await supabase.from("vip_users").select("creator_id").eq("telegram_id", userId).single();
+  const creatorId = userEntry?.creator_id;
+  const { data: creator } = await supabase.from("creator_config").select("paypal, preis, gruppe_link, bot_paket, vip_days").eq("creator_id", creatorId).single();
+
+  if (!creator || creator.bot_paket !== "premium") {
+    return bot.sendMessage(chatId, "🚫 Screenshot-Upload ist nur mit Premium-Zugang möglich.");
+  }
+
+  const fileId = msg.photo[msg.photo.length - 1].file_id;
+  try {
+    const file = await bot.getFile(fileId);
+    const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    const res = await fetch(url);
+    const buffer = await res.arrayBuffer();
+
+    const [result] = await visionClient.textDetection({ image: { content: Buffer.from(buffer) } });
+    const detections = result.textAnnotations;
+    if (!detections.length) return bot.sendMessage(chatId, "❌ Kein Text erkannt. Bitte sende den Screenshot erneut.");
+
+    const text = detections[0].description;
+    console.log("OCR Text:", text);
+
+    if (isValidPaypalScreenshot(text, creator.preis, creator.paypal)) {
+      const vipBis = new Date();
+      vipBis.setDate(vipBis.getDate() + (creator.vip_days || 7));
+
+      await supabase.from("vip_users").update({
+        zahlung_ok: true,
+        vip_bis: vipBis.toISOString().split("T")[0],
+        screenshot_url: file.file_path,
+        status: "aktiv"
+      }).eq("telegram_id", userId);
+
+      await bot.sendMessage(chatId, `✅ Zahlung über **${creator.preis} €** an **${creator.paypal}** erkannt! Zugang wird vorbereitet.`);
+      await bot.sendMessage(chatId, `💬 Hier ist dein exklusiver Zugang: ${creator.gruppe_link}`);
+    } else {
+      await bot.sendMessage(chatId, `⚠️ Screenshot ungültig.
+
+Bitte achte darauf, dass **alle folgenden Punkte** sichtbar sind:
+- Text \"Geld gesendet\"
+- Betrag -${creator.preis} €
+- Empfänger: ${creator.paypal}
+- Transaktionsnummer (z. B. 1WC...G)
+- \"Freunde und Familie\"
+- Datum & Uhrzeit sichtbar
+
+📸 Nur Screenshots **direkt aus dem PayPal-Verlauf** werden akzeptiert.`);
+    }
+  } catch (err) {
+    console.error("OCR Fehler:", err.message);
+    await bot.sendMessage(chatId, "🚫 Fehler beim Verarbeiten des Screenshots.");
+  }
 });
 
 // Fehler-Logging aktivieren
