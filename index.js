@@ -37,7 +37,7 @@ const visionClient = new vision.ImageAnnotatorClient({
 const isValidPaypalScreenshot = (text, expectedAmount) => {
   return (
     text.includes("Geld gesendet") &&
-    text.match(/Juli\s\d{1,2},\s\d{1,2}:\d{2}\s(AM|PM)/) &&
+     /[A-ZÄÖÜa-zäöü]+\s\d{1,2},\s\d{1,2}:\d{2}\s(AM|PM)/.test(text) &&
     text.includes("Freunde und Familie") &&
     text.includes(`-${expectedAmount}`) &&
     text.match(/1WC[A-Z0-9]{13}G/)
