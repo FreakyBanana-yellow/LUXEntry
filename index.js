@@ -81,4 +81,16 @@ Bitte bestätige zunächst dein Alter, um fortzufahren.`, {
   });
 });
 
-// ... (Rest bleibt unverändert)
+// Fehler-Logging aktivieren
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("💥 Unhandled Rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("💥 Uncaught Exception:", err);
+});
+
+// App Start
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✅ LUXEntryBot läuft via Webhook auf: ${webhookUrl}`);
+});
