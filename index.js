@@ -48,12 +48,12 @@ const isValidPaypalScreenshot = (text, expectedAmount, recipientEmail) => {
 bot.onText(/\/start(.*)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const user = msg.from;
-  const startParam = match[1] ? match[1].trim().replace("=", "") : null;
+  const modelParam = match[1] ? match[1].trim().replace("=", "") : null;
 
   const { data: model } = await supabase
     .from("creator_config")
     .select("creator_id, bot_paket")
-    .eq("telegramlink", startParam)
+    .eq("telegramlink", modelParam)
     .single();
 
   const modelId = model?.creator_id;
@@ -114,4 +114,80 @@ bot.on("callback_query", async (query) => {
 
 📸 **Nur Screenshots direkt aus dem Verlauf** sind gültig!`);
   }
+});
+
+bot.on("photo", async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  const { data: userEntry } = await supabase.from("vip_users").select("creator_id").eq("telegram_id", userId).single();
+  const creatorId = userEntry?.creator_id;
+  const { data: creator } = await supabase.from("creator_config").select("paypal, preis, gruppe_link, bot_paket, vip_days").eq("creator_id", creatorId).single();
+
+  if (!creator) return bot.sendMessage(chatId, "❌ Fehler beim Laden der Model-Daten.");
+
+  const fileId = msg.photo[msg.photo.length - 1].file_id;
+  try {
+    const file = await bot.getFile(fileId);
+    const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    const res = await fetch(url);
+    const buffer = await res.arrayBuffer();
+
+    const [result] = await visionClient.textDetection({ image: { content: Buffer.from(buffer) } });
+    const detections = result.textAnnotations;
+    if (!detections.length) return bot.sendMessage(chatId, "❌ Kein Text erkannt. Bitte sende den Screenshot erneut.");
+
+    const text = detections[0].description;
+    console.log("OCR Text:", text);
+
+    if (isValidPaypalScreenshot(text, creator.preis, creator.paypal)) {
+      const vipBis = new Date();
+      vipBis.setDate(vipBis.getDate() + (creator.vip_days || 7));
+
+      await supabase.from("vip_users").update({
+        zahlung_ok: true,
+        vip_bis: vipBis.toISOString().split("T")[0],
+        screenshot_url: file.file_path,
+        status: "aktiv"
+      }).eq("telegram_id", userId);
+
+      await bot.sendMessage(chatId, `✅ Zahlung über **${creator.preis} €** an **${creator.paypal}** erkannt! Zugang wird vorbereitet.`);
+
+      if (creator.bot_paket === "premium") {
+        await bot.sendMessage(chatId, `📸 Bitte sende jetzt ein Selfie, auf dem du gut erkennbar bist. Dieses wird nur intern zur Altersprüfung gespeichert.`);
+        return;
+      }
+
+      await bot.sendMessage(chatId, `💬 Hier ist dein exklusiver Zugang: ${creator.gruppe_link}`);
+    } else {
+      await bot.sendMessage(chatId, `⚠️ Screenshot ungültig.
+
+Bitte achte darauf, dass **alle folgenden Punkte** sichtbar sind:
+- Text "Geld gesendet"
+- Betrag -${creator.preis} €
+- Empfänger: ${creator.paypal}
+- Transaktionsnummer (z. B. 1WC...G)
+- "Freunde und Familie"
+- Datum & Uhrzeit sichtbar
+
+📸 Nur Screenshots **direkt aus dem PayPal-Verlauf** werden akzeptiert.`);
+    }
+  } catch (err) {
+    console.error("OCR Fehler:", err.message);
+    await bot.sendMessage(chatId, "🚫 Fehler beim Verarbeiten des Screenshots.");
+  }
+});
+
+// Fehler-Logging aktivieren
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("💥 Unhandled Rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("💥 Uncaught Exception:", err);
+});
+
+// App Start
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✅ LUXEntryBot läuft via Webhook auf: ${webhookUrl}`);
 });
