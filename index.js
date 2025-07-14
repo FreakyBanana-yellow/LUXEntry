@@ -119,7 +119,7 @@ an folgende PayPal-Adresse:
 
 ⚠️ Nur Screenshots **direkt aus dem PayPal-Verlauf** werden akzeptiert!`);
 
-});
+};
 
 bot.on("photo", async (msg) => {
   const chatId = msg.chat.id;
