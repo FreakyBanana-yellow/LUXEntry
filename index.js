@@ -1,10 +1,11 @@
-// index.js (Webhook-Version für LUXEntryBot mit Supabase + Screenshotprüfung)
+// index.js (Vollständig dynamisch – LUXEntryBot mit Supabase)
 import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import vision from "@google-cloud/vision";
 import fetch from "node-fetch";
+import cron from "node-cron";
 
 dotenv.config();
 
@@ -28,7 +29,7 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// Google Vision Client (OCR für Screenshot-Auswertung)
+// Google Vision Client
 const visionClient = new vision.ImageAnnotatorClient({
   keyFilename: "/etc/secrets/vision_key.json"
 });
@@ -47,16 +48,21 @@ const isValidPaypalScreenshot = (text, expectedAmount, recipientEmail) => {
 bot.onText(/\/start(.*)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const user = msg.from;
-  const modelId = match[1] ? match[1].trim().replace("=", "") : null;
+  const modelName = match[1] ? match[1].trim().replace("=", "") : null;
 
-  if (modelId) {
-    await supabase.from("vip_users").upsert({
-      telegram_id: user.id,
-      username: user.username,
-      creator_id: modelId,
-      status: "gestartet"
-    }, { onConflict: ["telegram_id"] });
+  const { data: model } = await supabase.from("creator_config").select("creator_id").eq("creator_name", modelName).single();
+  const modelId = model?.creator_id;
+
+  if (!modelId) {
+    return bot.sendMessage(chatId, "❌ Ungültiger Model-Link. Bitte prüfe deinen Zugangslink.");
   }
+
+  await supabase.from("vip_users").upsert({
+    telegram_id: user.id,
+    username: user.username,
+    creator_id: modelId,
+    status: "gestartet"
+  }, { onConflict: ["telegram_id"] });
 
   await bot.sendMessage(chatId, `👋 Willkommen, ${user.first_name}!
 
@@ -89,7 +95,7 @@ bot.on("callback_query", async (query) => {
     const { data: userEntry } = await supabase.from("vip_users").select("creator_id").eq("telegram_id", userId).single();
     const creatorId = userEntry?.creator_id;
 
-    const { data: creator } = await supabase.from("creator_config").select("paypal, preis").eq("creator_id", creatorId).single();
+    const { data: creator } = await supabase.from("creator_config").select("paypal, preis, welcome_text, regeln_text").eq("creator_id", creatorId).single();
     if (!creator) return bot.sendMessage(chatId, "❌ Fehler beim Laden der Model-Daten.");
 
     await bot.sendMessage(chatId, `🔐 Um Zugang zu erhalten, sende bitte einen Screenshot **aus deinem PayPal-Zahlungsverlauf**. Wichtig:
@@ -125,7 +131,7 @@ bot.on("photo", async (msg) => {
 
     const { data: userEntry } = await supabase.from("vip_users").select("creator_id").eq("telegram_id", userId).single();
     const creatorId = userEntry?.creator_id;
-    const { data: creator } = await supabase.from("creator_config").select("paypal, preis, vip_days").eq("creator_id", creatorId).single();
+    const { data: creator } = await supabase.from("creator_config").select("paypal, preis, vip_days, gruppe_link").eq("creator_id", creatorId).single();
 
     if (!creator) return bot.sendMessage(chatId, "❌ Fehler beim Laden der Model-Daten.");
 
@@ -141,6 +147,7 @@ bot.on("photo", async (msg) => {
       }).eq("telegram_id", userId);
 
       await bot.sendMessage(chatId, `✅ Zahlung über **${creator.preis} €** an **${creator.paypal}** erkannt! Zugang wird vorbereitet.`);
+      await bot.sendMessage(chatId, `💬 Hier ist dein exklusiver Zugang: ${creator.gruppe_link}`);
     } else {
       await bot.sendMessage(chatId, `⚠️ Screenshot ungültig.
 
@@ -157,6 +164,25 @@ Bitte achte darauf, dass **alle folgenden Punkte** sichtbar sind:
   } catch (err) {
     console.error("OCR Fehler:", err.message);
     await bot.sendMessage(chatId, "🚫 Fehler beim Verarbeiten des Screenshots.");
+  }
+});
+
+// Reminder-Logik (läuft täglich 10:00 Uhr)
+cron.schedule("0 10 * * *", async () => {
+  const { data: users } = await supabase.from("vip_users").select("telegram_id, vip_bis, creator_id").eq("status", "aktiv");
+
+  for (const user of users) {
+    const vipBis = new Date(user.vip_bis);
+    const heute = new Date();
+    const diffTage = Math.ceil((vipBis - heute) / (1000 * 60 * 60 * 24));
+
+    const { data: creator } = await supabase.from("creator_config").select("reminder_days").eq("creator_id", user.creator_id).single();
+    if (!creator?.reminder_days) continue;
+
+    const reminderDays = creator.reminder_days.split(",").map(x => parseInt(x.trim()));
+    if (reminderDays.includes(diffTage)) {
+      await bot.sendMessage(user.telegram_id, `⏳ Erinnerung: Dein Zugang läuft in **${diffTage} Tag(en)** ab. Erneuerung rechtzeitig möglich.`);
+    }
   }
 });
 
