@@ -34,13 +34,12 @@ const visionClient = new vision.ImageAnnotatorClient({
   keyFilename: "/etc/secrets/vision_key.json"
 });
 
-const isValidPaypalScreenshot = (text, expectedAmount, recipientEmail) => {
+const isValidPaypalScreenshot = (text, expectedAmount) => {
   return (
     text.includes("Geld gesendet") &&
     text.match(/Juli\s\d{1,2},\s\d{1,2}:\d{2}\s(AM|PM)/) &&
     text.includes("Freunde und Familie") &&
     text.includes(`-${expectedAmount}`) &&
-    text.includes(recipientEmail) &&
     text.match(/1WC[A-Z0-9]{13}G/)
   );
 };
@@ -103,17 +102,23 @@ bot.on("callback_query", async (query) => {
     const { data: creator } = await supabase.from("creator_config").select("paypal, preis, welcome_text, regeln_text").eq("creator_id", creatorId).single();
     if (!creator) return bot.sendMessage(chatId, "❌ Fehler beim Laden der Model-Daten.");
 
-    await bot.sendMessage(chatId, `🔐 Um Zugang zu erhalten, sende bitte einen Screenshot **aus deinem PayPal-Zahlungsverlauf**. Wichtig:
+    await bot.sendMessage(chatId, `🔐 Um Zugang zu erhalten, folge bitte diesen Schritten:
 
-- Der Screenshot muss den Text "Geld gesendet" enthalten
-- Datum & Uhrzeit sichtbar (z. B. "Juli 11, 10:12 AM")
-- Betrag **-${creator.preis} €**
-- "Freunde und Familie" muss angezeigt werden
-- Transaktionsnummer wie z. B. 1WC88058A3980530G
-- Die Zahlung muss an **${creator.paypal}** erfolgt sein ✅
+1️⃣ Überweise den Betrag von **–${creator.preis} €**  
+an folgende PayPal-Adresse:  
+👉 **${creator.paypal}** *(Freunde & Familie)*
 
-📸 **Nur Screenshots direkt aus dem Verlauf** sind gültig!`);
-  }
+2️⃣ Sende danach einen Screenshot **aus deinem PayPal-Zahlungsverlauf** hier in den Chat.
+
+📸 Der Screenshot muss folgende Infos enthalten:
+- Text **„Geld gesendet“**
+- Betrag **–${creator.preis} €**
+- Datum & Uhrzeit (z. B. "Juli 11, 10:12 AM")
+- Transaktionsnummer wie **1WC...G**
+- Hinweis auf **„Freunde und Familie“**
+
+⚠️ Nur Screenshots **direkt aus dem PayPal-Verlauf** werden akzeptiert!`);
+
 });
 
 bot.on("photo", async (msg) => {
@@ -150,7 +155,8 @@ bot.on("photo", async (msg) => {
         screenshot_url: file.file_path,
         status: "aktiv"
       }).eq("telegram_id", userId);
-
+      await bot.sendMessage(chatId, creator.welcome_text || "👋 Willkommen!");
+      await bot.sendMessage(chatId, creator.regeln_text || "📜 Bitte bestätige, dass du unsere Gruppenregeln gelesen hast.");
       await bot.sendMessage(chatId, `✅ Zahlung über **${creator.preis} €** an **${creator.paypal}** erkannt! Zugang wird vorbereitet.`);
 
       if (creator.bot_paket === "premium") {
